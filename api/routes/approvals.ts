@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import { getDb, saveDbToDisk } from '../db.js';
-import { rowToObj, logOperation, pushNotification, calcWaitHours } from '../services.js';
+import { rowToObj, logOperation, pushNotification, calcWaitHours, isWaitOver48h } from '../services.js';
 
 const router = Router();
 
@@ -162,8 +162,9 @@ router.post('/:id/escalate', async (req: Request, res: Response) => {
     const step = rowToObj(stepRows.columns, stepRows.values[0]);
 
     const waitH = calcWaitHours(step.createdAt);
-    if (waitH < 48) {
-      return res.status(400).json({ success: false, error: `等待时间不足48小时（当前${waitH.toFixed(1)}小时），不能升级` });
+    if (!isWaitOver48h(step.createdAt)) {
+      const remainMin = Math.ceil((48 * 3600000 - (Date.now() - new Date(step.createdAt.replace(' ', 'T')).getTime())) / 60000);
+      return res.status(400).json({ success: false, error: `等待时间不足48小时（当前${waitH.toFixed(1)}小时，还差${remainMin}分钟），不能升级` });
     }
 
     if (step.escalated) {
@@ -192,6 +193,68 @@ router.post('/:id/escalate', async (req: Request, res: Response) => {
 
     await saveDbToDisk();
     res.json({ success: true, message: '已升级至上级审批' });
+  } catch (e: any) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+router.post('/batch', async (req: Request, res: Response) => {
+  try {
+    const { applicationIds, action, approverId, comment } = req.body;
+    if (!Array.isArray(applicationIds) || !applicationIds.length) {
+      return res.status(400).json({ success: false, error: '请选择至少一条申请' });
+    }
+    if (!approverId) return res.status(400).json({ success: false, error: '缺少审批人' });
+    if (!['approve', 'reject'].includes(action)) {
+      return res.status(400).json({ success: false, error: '操作类型只能是 approve 或 reject' });
+    }
+
+    const db = await getDb();
+    const results: any[] = [];
+
+    for (const id of applicationIds) {
+      try {
+        const aRows = db.exec('SELECT * FROM applications WHERE id = ?', [id])[0];
+        if (!aRows) { results.push({ id, success: false, error: '申请不存在' }); continue; }
+        const app = rowToObj(aRows.columns, aRows.values[0]);
+
+        const stepRows = db.exec(`SELECT * FROM approval_records WHERE application_id = ? AND status = 'pending' ORDER BY step LIMIT 1`, [id])[0];
+        if (!stepRows) { results.push({ id, success: false, error: '无待审批步骤' }); continue; }
+        const step = rowToObj(stepRows.columns, stepRows.values[0]);
+        if (step.approverId !== approverId) { results.push({ id, success: false, error: '非当前审批人' }); continue; }
+
+        if (action === 'approve') {
+          db.run(`UPDATE approval_records SET status = 'approved', comment = ?, processed_at = datetime('now') WHERE id = ?`, [comment || null, step.id]);
+          const nextStepRows = db.exec(`SELECT * FROM approval_records WHERE application_id = ? AND status = 'pending' ORDER BY step LIMIT 1`, [id])[0];
+          if (!nextStepRows) {
+            db.run(`UPDATE applications SET status = 'approved', updated_at = datetime('now') WHERE id = ?`, [id]);
+            await updateEmployeeAfterApproval(app);
+            await logOperation(approverId, step.approverName, '批量审批通过（完成）', id, comment || '通过审批', 'operation');
+            await pushNotification(app.employeeId, `${app.type === 'regular' ? '转正' : '调岗'}审批通过`, `您的申请已审批通过，档案已同步更新`, 'info');
+          } else {
+            const nextStep = rowToObj(nextStepRows.columns, nextStepRows.values[0]);
+            await logOperation(approverId, step.approverName, '批量审批通过', id, `第${step.step}/${step.totalSteps}步通过，等待：${nextStep.approverName}`, 'operation');
+            await pushNotification(nextStep.approverId, `新的${app.type === 'regular' ? '转正' : '调岗'}申请待审批`, `${app.employeeName}的申请已通过上一级审批，请您审批`, 'approval');
+            await pushNotification(app.employeeId, '审批进度更新', `您的申请已通过${step.approverName}审批，等待${nextStep.approverName}审批`, 'info');
+          }
+          results.push({ id, success: true, action: 'approved', employeeName: app.employeeName });
+        } else {
+          db.run(`UPDATE approval_records SET status = 'rejected', comment = ?, processed_at = datetime('now') WHERE id = ?`, [comment || null, step.id]);
+          db.run(`UPDATE approval_records SET status = 'rejected' WHERE application_id = ? AND status = 'pending'`, [id]);
+          db.run(`UPDATE applications SET status = 'rejected', updated_at = datetime('now') WHERE id = ?`, [id]);
+          await logOperation(approverId, step.approverName, '批量审批退回', id, comment || '退回申请', 'exception');
+          await pushNotification(app.employeeId, `${app.type === 'regular' ? '转正' : '调岗'}申请被退回`, `${step.approverName}退回了您的申请：${comment || '无说明'}`, 'exception');
+          results.push({ id, success: true, action: 'rejected', employeeName: app.employeeName });
+        }
+      } catch (e: any) {
+        results.push({ id, success: false, error: e.message });
+      }
+    }
+
+    await saveDbToDisk();
+    const successCount = results.filter(r => r.success).length;
+    const failCount = results.filter(r => !r.success).length;
+    res.json({ success: true, data: { results, successCount, failCount, total: results.length } });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
   }

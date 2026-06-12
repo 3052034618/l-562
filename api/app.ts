@@ -13,7 +13,7 @@ import dotenv from 'dotenv'
 import { fileURLToPath } from 'url'
 import { initDb } from './db.js'
 import cron from 'node-cron'
-import { calcWaitHours, pushNotification, logOperation, rowToObj, fixApprovalFlowForPendingApplications } from './services.js'
+import { calcWaitHours, pushNotification, logOperation, rowToObj, fixApprovalFlowForPendingApplications, isWaitOver48h } from './services.js'
 import { getDb, saveDbToDisk } from './db.js'
 
 import authRoutes from './routes/auth.js'
@@ -102,8 +102,7 @@ cron.schedule('0 * * * *', async () => {
     const updates: any[] = []
     rows.values.forEach(v => {
       const o = rowToObj(rows.columns, v)
-      const wh = calcWaitHours(o.createdAt)
-      if (wh >= 48) updates.push(o)
+      if (isWaitOver48h(o.createdAt)) updates.push(o)
     })
     for (const step of updates) {
       const appRows = db.exec('SELECT * FROM employees WHERE id = ?', [step.approverId])[0]

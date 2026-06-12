@@ -4,7 +4,12 @@ import { useAppStore } from '@/store/app';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, ComposedChart, Area, Line,
 } from 'recharts';
-import { BarChart2, Calendar, FileDown, TrendingUp, FileSpreadsheet, FileText, CheckCircle2, ArrowRightLeft, Clock, AlertTriangle, RefreshCw, DownloadCloud, LineChart as LineChartIcon } from 'lucide-react';
+import { BarChart2, Calendar, FileDown, TrendingUp, FileSpreadsheet, FileText, CheckCircle2, ArrowRightLeft, Clock, RefreshCw, DownloadCloud, LineChart as LineChartIcon, Filter, X } from 'lucide-react';
+
+const DEPT_OPTIONS = ['技术部', '人力资源部', '财务部', '市场部', '董事会'];
+const LEVEL_OPTIONS = ['staff', 'supervisor', 'manager', 'director'];
+const TYPE_OPTIONS = ['regular', 'transfer'];
+const LEVEL_LABEL: Record<string, string> = { staff: '员工级', supervisor: '主管级', manager: '经理级', director: '总监级' };
 
 export default function Reports() {
   const [trend, setTrend] = useState<any[]>([]);
@@ -14,14 +19,26 @@ export default function Reports() {
   });
   const [report, setReport] = useState<any>(null);
   const [loading, setLoading] = useState(false);
-  const { overview, refresh } = useAppStore();
+  const [filterDept, setFilterDept] = useState('');
+  const [filterLevel, setFilterLevel] = useState('');
+  const [filterType, setFilterType] = useState('');
+  const [showFilter, setShowFilter] = useState(false);
+  const { overview, refresh, departments } = useAppStore();
+
+  const filterParams = useMemo(() => ({
+    department: filterDept || undefined,
+    level: filterLevel || undefined,
+    type: filterType || undefined,
+  }), [filterDept, filterLevel, filterType]);
+
+  const hasFilter = filterDept || filterLevel || filterType;
 
   useEffect(() => {
     (async () => {
-      const r = await api.get<any[]>('/api/reports/trend');
+      const r = await api.get<any[]>('/api/reports/trend', filterParams);
       if (r.success) setTrend(r.data);
     })();
-  }, []);
+  }, [filterDept, filterLevel, filterType]);
 
   const genReport = async () => {
     setLoading(true);
@@ -31,8 +48,8 @@ export default function Reports() {
     refresh();
   };
 
-  const exportExcel = () => api.download('/api/reports/export/excel', { month });
-  const exportPdf = () => api.download('/api/reports/export/pdf', { month });
+  const exportExcel = () => api.download('/api/reports/export/excel', { month, ...filterParams });
+  const exportPdf = () => api.download('/api/reports/export/pdf', { month, ...filterParams });
 
   const m = overview.metrics?.current || {};
   const pm = overview.metrics?.previous || {};
@@ -55,6 +72,12 @@ export default function Reports() {
     months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
   }
 
+  const clearFilter = () => {
+    setFilterDept('');
+    setFilterLevel('');
+    setFilterType('');
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -67,7 +90,13 @@ export default function Reports() {
             <div className="text-sm text-slate-500">转正/调岗通过率 · 平均处理时长 · 趋势图</div>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={() => setShowFilter(!showFilter)}
+            className={`btn-ghost text-xs border ${hasFilter ? 'border-brand-300 bg-brand-50 text-brand-700' : 'border-slate-200'}`}
+          >
+            <Filter size={14} /> 筛选{hasFilter ? '（已启用）' : ''}
+          </button>
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200">
             <Calendar size={14} className="text-slate-400" />
             <select className="bg-transparent outline-none text-sm font-medium text-slate-700" value={month} onChange={e => setMonth(e.target.value)}>
@@ -82,6 +111,49 @@ export default function Reports() {
           <button onClick={exportPdf} className="btn-primary text-xs"><FileText size={14} /> 导出PDF</button>
         </div>
       </div>
+
+      {showFilter && (
+        <div className="card !p-4 animate-fade-in border-brand-100 bg-brand-50/30">
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-sm font-semibold text-slate-700">数据筛选</div>
+            {hasFilter && (
+              <button onClick={clearFilter} className="text-xs text-brand-600 hover:text-brand-700 flex items-center gap-1">
+                <X size={12} /> 清除筛选
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-500">部门：</span>
+              <select className="input !py-1.5 !px-2 text-xs w-32" value={filterDept} onChange={e => setFilterDept(e.target.value)}>
+                <option value="">全部</option>
+                {(departments.length ? departments : DEPT_OPTIONS).map(d => <option key={d} value={d}>{d}</option>)}
+              </select>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-500">职级：</span>
+              <select className="input !py-1.5 !px-2 text-xs w-28" value={filterLevel} onChange={e => setFilterLevel(e.target.value)}>
+                <option value="">全部</option>
+                {LEVEL_OPTIONS.map(l => <option key={l} value={l}>{LEVEL_LABEL[l]}</option>)}
+              </select>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-500">类型：</span>
+              <select className="input !py-1.5 !px-2 text-xs w-24" value={filterType} onChange={e => setFilterType(e.target.value)}>
+                <option value="">全部</option>
+                {TYPE_OPTIONS.map(t => <option key={t} value={t}>{t === 'regular' ? '转正' : '调岗'}</option>)}
+              </select>
+            </div>
+            {hasFilter && (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {filterDept && <span className="chip bg-brand-100 text-brand-700">{filterDept}</span>}
+                {filterLevel && <span className="chip bg-brand-100 text-brand-700">{LEVEL_LABEL[filterLevel]}</span>}
+                {filterType && <span className="chip bg-brand-100 text-brand-700">{filterType === 'regular' ? '转正' : '调岗'}</span>}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
         {[
@@ -190,7 +262,10 @@ export default function Reports() {
       <div className="card">
         <div className="flex items-center justify-between mb-4">
           <div className="text-sm font-bold text-slate-800">月度统计明细（近12个月）</div>
-          <button onClick={exportExcel} className="btn-secondary text-xs"><DownloadCloud size={14} /> 一键导出所有数据</button>
+          <div className="flex items-center gap-2">
+            {hasFilter && <span className="text-xs text-brand-600">当前筛选：{[filterDept, filterLevel && LEVEL_LABEL[filterLevel], filterType && (filterType === 'regular' ? '转正' : '调岗')].filter(Boolean).join(' / ')}</span>}
+            <button onClick={exportExcel} className="btn-secondary text-xs"><DownloadCloud size={14} /> 一键导出所有数据</button>
+          </div>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[700px]">

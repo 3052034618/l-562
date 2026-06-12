@@ -199,6 +199,9 @@ export async function decideApprovalFlow(
       || findOneByLevel(db, 'manager', finalDept)
       || findOneByLevel(db, 'director');
     director = findValidApprover(director, emp.id);
+    if (!director) {
+      director = findOneByLevelExcluding(db, ['director', 'manager'], emp.id);
+    }
     if (!director && emp.supervisorId) {
       const supRows = db.exec('SELECT * FROM employees WHERE id = ?', [emp.supervisorId])[0];
       if (supRows && supRows.values.length) {
@@ -231,6 +234,13 @@ function findOneByLevel(db: any, level: string, department?: string) {
   return rowToObj(rows.columns, rows.values[0]);
 }
 
+function findOneByLevelExcluding(db: any, levels: string[], excludeId: string) {
+  const ph = levels.map(() => '?').join(',');
+  const rows = db.exec(`SELECT * FROM employees WHERE level IN (${ph}) AND id != ? LIMIT 1`, [...levels, excludeId])[0];
+  if (!rows || !rows.values.length) return null;
+  return rowToObj(rows.columns, rows.values[0]);
+}
+
 export function rowToObj(columns: string[], values: any[]): any {
   const obj: any = {};
   columns.forEach((c, i) => {
@@ -243,7 +253,12 @@ export function rowToObj(columns: string[], values: any[]): any {
 export function calcWaitHours(createdAt: string): number {
   const then = new Date(createdAt.replace(' ', 'T')).getTime();
   const now = Date.now();
-  return Math.max(0, Math.round((now - then) / 3600000));
+  return Math.max(0, (now - then) / 3600000);
+}
+
+export function isWaitOver48h(createdAt: string): boolean {
+  const then = new Date(createdAt.replace(' ', 'T')).getTime();
+  return (Date.now() - then) >= 48 * 3600000;
 }
 
 export async function logOperation(
@@ -278,12 +293,16 @@ export async function pushNotification(
 
 export async function fixApprovalFlowForPendingApplications(): Promise<number> {
   const db = await getDb();
-  const rows = db.exec(`SELECT * FROM applications WHERE status IN ('pending_approval', 'escalated', 'pending_check')`)[0];
+  const rows = db.exec(`SELECT * FROM applications WHERE status IN ('pending_approval', 'escalated')`)[0];
   if (!rows || !rows.values.length) return 0;
 
   let fixed = 0;
   for (const v of rows.values) {
     const app = rowToObj(rows.columns, v);
+    const processedRows = db.exec(`SELECT COUNT(*) FROM approval_records WHERE application_id = ? AND status NOT IN ('pending')`, [app.id])[0];
+    const hasProcessed = processedRows && processedRows.values[0][0] as number > 0;
+    if (hasProcessed) continue;
+
     const newSteps = await decideApprovalFlow(app.employeeId, app.type as AppType, app.targetDepartment);
     if (!newSteps.length) continue;
 
@@ -295,9 +314,8 @@ export async function fixApprovalFlowForPendingApplications(): Promise<number> {
       );
     }
 
-    const firstApprover = newSteps[0];
     db.run(`UPDATE applications SET status = 'pending_approval', updated_at = datetime('now') WHERE id = ?`, [app.id]);
-    await logOperation(null, 'system', '审批流程修复（新规则）', app.id, `按新规则重建审批流程：${newSteps.length}步，首审：${firstApprover.approverName}`, 'system');
+    await logOperation(null, 'system', '审批流程修复（新规则）', app.id, `按新规则重建审批流程：${newSteps.length}步，首审：${newSteps[0].approverName}`, 'system');
     fixed++;
   }
   if (fixed > 0) await saveDbToDisk();

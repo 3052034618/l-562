@@ -29,6 +29,7 @@ interface AppState {
   approve: (id: string, approverId: string, comment?: string) => Promise<Application | null>;
   reject: (id: string, approverId: string, comment?: string) => Promise<Application | null>;
   escalate: (id: string, operatorId: string) => Promise<boolean>;
+  batchAction: (ids: string[], action: 'approve' | 'reject', approverId: string, comment?: string) => Promise<any>;
   readNotif: (id: string) => Promise<void>;
   readAll: () => Promise<void>;
 }
@@ -126,6 +127,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       return true;
     }
     return false;
+  },
+
+  async batchAction(ids, action, approverId, comment) {
+    const r = await api.post('/api/approvals/batch', { applicationIds: ids, action, approverId, comment });
+    if (r.success) {
+      return r.data;
+    }
+    return { results: [], successCount: 0, failCount: ids.length, total: ids.length };
   },
 
   async readNotif(id) {

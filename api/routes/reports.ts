@@ -16,6 +16,16 @@ function addMonths(d: Date, n: number) {
   return x;
 }
 
+function buildFilterClause(query: any): { sql: string; params: any[] } {
+  const conds: string[] = [];
+  const params: any[] = [];
+  if (query.department) { conds.push(`e.department = ?`); params.push(query.department); }
+  if (query.level) { conds.push(`e.level = ?`); params.push(query.level); }
+  if (query.type) { conds.push(`a.type = ?`); params.push(query.type); }
+  const sql = conds.length ? ' AND ' + conds.join(' AND ') : '';
+  return { sql, params };
+}
+
 router.get('/overview', async (_req: Request, res: Response) => {
   try {
     const db = await getDb();
@@ -92,9 +102,11 @@ router.get('/overview', async (_req: Request, res: Response) => {
   }
 });
 
-router.get('/trend', async (_req: Request, res: Response) => {
+router.get('/trend', async (req: Request, res: Response) => {
   try {
     const db = await getDb();
+    const f = buildFilterClause(req.query);
+    const empJoin = f.sql ? ' JOIN employees e ON a.employee_id = e.id' : '';
     const now = new Date();
     const trend: any[] = [];
     for (let i = 11; i >= 0; i--) {
@@ -104,12 +116,12 @@ router.get('/trend', async (_req: Request, res: Response) => {
       const nextKey = monthKey(nextD);
       const start = `${key}-01 00:00:00`;
       const end = `${nextKey}-01 00:00:00`;
-      const regTotal = Number(db.exec(`SELECT COUNT(*) FROM applications WHERE type='regular' AND submit_time >= ? AND submit_time < ?`, [start, end])[0].values[0][0]) || 0;
-      const regPass = Number(db.exec(`SELECT COUNT(*) FROM applications WHERE type='regular' AND status='approved' AND submit_time >= ? AND submit_time < ?`, [start, end])[0].values[0][0]) || 0;
-      const transTotal = Number(db.exec(`SELECT COUNT(*) FROM applications WHERE type='transfer' AND submit_time >= ? AND submit_time < ?`, [start, end])[0].values[0][0]) || 0;
-      const transPass = Number(db.exec(`SELECT COUNT(*) FROM applications WHERE type='transfer' AND status='approved' AND submit_time >= ? AND submit_time < ?`, [start, end])[0].values[0][0]) || 0;
+      const regTotal = Number(db.exec(`SELECT COUNT(*) FROM applications a${empJoin} WHERE a.type='regular' AND a.submit_time >= ? AND a.submit_time < ?${f.sql}`, [start, end, ...f.params])[0].values[0][0]) || 0;
+      const regPass = Number(db.exec(`SELECT COUNT(*) FROM applications a${empJoin} WHERE a.type='regular' AND a.status='approved' AND a.submit_time >= ? AND a.submit_time < ?${f.sql}`, [start, end, ...f.params])[0].values[0][0]) || 0;
+      const transTotal = Number(db.exec(`SELECT COUNT(*) FROM applications a${empJoin} WHERE a.type='transfer' AND a.submit_time >= ? AND a.submit_time < ?${f.sql}`, [start, end, ...f.params])[0].values[0][0]) || 0;
+      const transPass = Number(db.exec(`SELECT COUNT(*) FROM applications a${empJoin} WHERE a.type='transfer' AND a.status='approved' AND a.submit_time >= ? AND a.submit_time < ?${f.sql}`, [start, end, ...f.params])[0].values[0][0]) || 0;
 
-      const durRows = db.exec(`SELECT a.submit_time, MAX(ar.processed_at) as lat FROM applications a JOIN approval_records ar ON a.id = ar.application_id WHERE a.status='approved' AND ar.processed_at IS NOT NULL AND a.submit_time >= ? AND a.submit_time < ? GROUP BY a.id`, [start, end])[0];
+      const durRows = db.exec(`SELECT a.submit_time, MAX(ar.processed_at) as lat FROM applications a${empJoin} JOIN approval_records ar ON a.id = ar.application_id WHERE a.status='approved' AND ar.processed_at IS NOT NULL AND a.submit_time >= ? AND a.submit_time < ?${f.sql} GROUP BY a.id`, [start, end, ...f.params])[0];
       let totalH = 0;
       let c = 0;
       if (durRows) {
@@ -197,7 +209,7 @@ router.post('/generate/monthly', async (req: Request, res: Response) => {
 router.get('/export/excel', async (req: Request, res: Response) => {
   try {
     const db = await getDb();
-    const { startDate, endDate, month } = req.query as any;
+    const { startDate, endDate, month, department, level, type } = req.query as any;
     let start = '', end = '';
     if (month) {
       const d = new Date(month + '-01');
@@ -211,7 +223,8 @@ router.get('/export/excel', async (req: Request, res: Response) => {
       start = `${monthKey(now)}-01 00:00:00`;
       end = `${monthKey(addMonths(now, 1))}-01 00:00:00`;
     }
-    const rows = db.exec(`SELECT a.id, a.type, a.employee_id, a.employee_name, a.department, a.position, a.target_department, a.target_position, a.status, a.submit_time, (SELECT MAX(processed_at) FROM approval_records WHERE application_id = a.id) as finish_time FROM applications a WHERE a.submit_time >= ? AND a.submit_time < ? ORDER BY a.submit_time`, [start, end])[0];
+    const f = buildFilterClause({ department, level, type });
+    const rows = db.exec(`SELECT a.id, a.type, a.employee_id, a.employee_name, a.department, a.position, a.target_department, a.target_position, a.status, a.submit_time, (SELECT MAX(processed_at) FROM approval_records WHERE application_id = a.id) as finish_time FROM applications a JOIN employees e ON a.employee_id = e.id WHERE a.submit_time >= ? AND a.submit_time < ?${f.sql} ORDER BY a.submit_time`, [start, end, ...f.params])[0];
     const data = rows ? rows.values.map(v => ({
       申请编号: v[0],
       类型: v[1] === 'regular' ? '转正' : '调岗',
@@ -234,7 +247,7 @@ router.get('/export/excel', async (req: Request, res: Response) => {
       '平均处理时长(小时)': v[4],
       '转正申请数': v[5],
       '调岗申请数': v[6],
-    })) : [];
+    })).reverse() : [];
 
     const wb = XLSX.utils.book_new();
     const ws1 = XLSX.utils.json_to_sheet(data);

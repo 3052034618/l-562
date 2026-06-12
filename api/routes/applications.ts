@@ -4,7 +4,7 @@ import { rowToObj, validateQualification, decideApprovalFlow, logOperation, push
 
 const router = Router();
 
-function toApplication(app: any, checks: any[], approvals: any[]) {
+function toApplication(app: any, checks: any[], approvals: any[], notifications: any[] = []) {
   const missing = checks.filter(c => !c.passed).map(c => c.label);
   const escalated = approvals.some(a => a.escalated);
   const currentPending = approvals.find(a => a.status === 'pending');
@@ -17,6 +17,36 @@ function toApplication(app: any, checks: any[], approvals: any[]) {
       waitHours: calcWaitHours(currentPending.createdAt),
     };
   }
+
+  const timeline: any[] = [];
+  timeline.push({ time: app.submitTime, type: 'submit', label: '申请提交', detail: `${app.employeeName}提交${app.type === 'regular' ? '转正' : '调岗'}申请` });
+  for (const c of checks) {
+    timeline.push({ time: app.submitTime, type: 'check', label: c.label, detail: c.passed ? '通过' : `未通过：${c.detail}`, passed: c.passed });
+  }
+  for (const a of approvals) {
+    timeline.push({
+      time: a.createdAt,
+      type: 'approval_created',
+      label: `${a.approverRole}（第${a.step}/${a.totalSteps}步）`,
+      detail: `${a.approverName} - 待审批`,
+      step: a.step,
+    });
+    if (a.processedAt && a.status !== 'pending') {
+      const actionMap: Record<string, string> = { approved: '通过', rejected: '退回', delegated: '转交上级' };
+      timeline.push({
+        time: a.processedAt,
+        type: a.status === 'delegated' ? 'escalated' : 'approval_processed',
+        label: `${a.approverRole}（第${a.step}/${a.totalSteps}步）`,
+        detail: `${a.approverName} - ${actionMap[a.status] || a.status}${a.comment ? '：' + a.comment : ''}${a.escalated ? ' [已升级]' : ''}`,
+        step: a.step,
+      });
+    }
+  }
+  for (const n of notifications) {
+    timeline.push({ time: n.timestamp, type: 'notification', label: n.action || '通知', detail: `${n.operatorName || ''} ${n.detail || ''}` });
+  }
+  timeline.sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+
   return {
     ...app,
     checkResults: checks,
@@ -24,6 +54,8 @@ function toApplication(app: any, checks: any[], approvals: any[]) {
     missingItems: missing,
     escalated,
     currentApprover,
+    timeline,
+    notifications,
   };
 }
 
@@ -45,6 +77,7 @@ router.get('/', async (req: Request, res: Response) => {
     const ids = apps.map(a => a.id);
     const checksMap: Record<string, any[]> = {};
     const approvalsMap: Record<string, any[]> = {};
+    const notifMap: Record<string, any[]> = {};
     if (ids.length) {
       const qmarks = ids.map(() => '?').join(',');
       const cRows = db.exec(`SELECT * FROM check_results WHERE application_id IN (${qmarks})`, ids)[0];
@@ -57,9 +90,14 @@ router.get('/', async (req: Request, res: Response) => {
         const o = rowToObj(aRows.columns, v);
         (approvalsMap[o.applicationId] ||= []).push(o);
       });
+      const opRows = db.exec(`SELECT * FROM operation_logs WHERE target IN (${qmarks}) ORDER BY timestamp`, ids)[0];
+      if (opRows) opRows.values.forEach(v => {
+        const o = rowToObj(opRows.columns, v);
+        (notifMap[o.target] ||= []).push(o);
+      });
     }
     const total = db.exec(`SELECT COUNT(*) as cnt FROM applications ${where}`, params)[0].values[0][0];
-    const list = apps.map(a => toApplication(a, checksMap[a.id] || [], approvalsMap[a.id] || []));
+    const list = apps.map(a => toApplication(a, checksMap[a.id] || [], approvalsMap[a.id] || [], notifMap[a.id] || []));
     res.json({ success: true, data: { list, total: Number(total) } });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
@@ -77,7 +115,9 @@ router.get('/:id', async (req: Request, res: Response) => {
     const checks = cRows ? cRows.values.map(v => rowToObj(cRows.columns, v)) : [];
     const apRows = db.exec('SELECT * FROM approval_records WHERE application_id = ? ORDER BY step', [id])[0];
     const approvals = apRows ? apRows.values.map(v => rowToObj(apRows.columns, v)) : [];
-    res.json({ success: true, data: toApplication(app, checks, approvals) });
+    const opRows = db.exec('SELECT * FROM operation_logs WHERE target = ? ORDER BY timestamp', [id])[0];
+    const opNotifs = opRows ? opRows.values.map(v => rowToObj(opRows.columns, v)) : [];
+    res.json({ success: true, data: toApplication(app, checks, approvals, opNotifs) });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
   }
