@@ -161,6 +161,15 @@ router.post('/:id/escalate', async (req: Request, res: Response) => {
     if (!stepRows) return res.status(400).json({ success: false, error: '无待审批步骤' });
     const step = rowToObj(stepRows.columns, stepRows.values[0]);
 
+    const waitH = calcWaitHours(step.createdAt);
+    if (waitH < 48) {
+      return res.status(400).json({ success: false, error: `等待时间不足48小时（当前${waitH.toFixed(1)}小时），不能升级` });
+    }
+
+    if (step.escalated) {
+      return res.status(400).json({ success: false, error: '已升级，请勿重复操作' });
+    }
+
     const approverRows = db.exec('SELECT * FROM employees WHERE id = ?', [step.approverId])[0];
     if (!approverRows) return res.status(404).json({ success: false, error: '审批人不存在' });
     const approver = rowToObj(approverRows.columns, approverRows.values[0]);
@@ -177,7 +186,7 @@ router.post('/:id/escalate', async (req: Request, res: Response) => {
       [crypto.randomUUID(), id, upper.id, upper.name, `升级审批（手动）`, step.step, step.totalSteps]
     );
 
-    await logOperation(operatorId || null, 'system', '审批手动升级', id, `从${approver.name}升级至${upper.name}`, 'exception');
+    await logOperation(operatorId || null, 'system', '审批手动升级', id, `从${approver.name}升级至${upper.name}，已等待${waitH.toFixed(1)}小时`, 'exception');
     await pushNotification(upper.id, '审批升级通知', `${app.employeeName}的${app.type === 'regular' ? '转正' : '调岗'}申请（${id}）已升级至您审批，请尽快处理`, 'escalation');
     await pushNotification(approver.id, '审批升级提醒', `${app.employeeName}的申请已升级至上级${upper.name}，您已不再是当前审批人`, 'exception');
 

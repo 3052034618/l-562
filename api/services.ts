@@ -157,16 +157,33 @@ export async function decideApprovalFlow(
   const isManagerAndAbove = level === 'manager' || level === 'director';
   const isTransfer = type === 'transfer';
 
+  function findValidApprover(candidate: any, excludeId: string): any {
+    if (!candidate) return null;
+    if (candidate.id !== excludeId) return candidate;
+    if (!candidate.supervisorId) return null;
+    const supRows = db.exec('SELECT * FROM employees WHERE id = ?', [candidate.supervisorId])[0];
+    if (!supRows || !supRows.values.length) return null;
+    return rowToObj(supRows.columns, supRows.values[0]);
+  }
+
   if (!isManagerAndAbove) {
-    steps.push({
-      approverId: emp.supervisorId,
-      approverName: emp.supervisorName,
-      approverRole: '直属主管审批',
-      step: 1,
-      total: 1,
-    });
+    const supRows = emp.supervisorId
+      ? db.exec('SELECT * FROM employees WHERE id = ?', [emp.supervisorId])[0]
+      : null;
+    let approver = supRows && supRows.values.length ? rowToObj(supRows.columns, supRows.values[0]) : null;
+    approver = findValidApprover(approver, emp.id);
+    if (approver) {
+      steps.push({
+        approverId: approver.id,
+        approverName: approver.name,
+        approverRole: '直属主管审批',
+        step: 1,
+        total: 1,
+      });
+    }
   } else {
-    const hrMgr = findOneByLevel(db, 'manager', '人力资源部');
+    let hrMgr = findOneByLevel(db, 'manager', '人力资源部');
+    hrMgr = findValidApprover(hrMgr, emp.id);
     if (hrMgr) {
       steps.push({
         approverId: hrMgr.id,
@@ -178,22 +195,29 @@ export async function decideApprovalFlow(
     }
 
     const finalDept = isTransfer && targetDepartment ? targetDepartment : emp.department;
-    const director = findOneByLevel(db, 'director', finalDept)
+    let director = findOneByLevel(db, 'director', finalDept)
       || findOneByLevel(db, 'manager', finalDept)
       || findOneByLevel(db, 'director');
-
+    director = findValidApprover(director, emp.id);
+    if (!director && emp.supervisorId) {
+      const supRows = db.exec('SELECT * FROM employees WHERE id = ?', [emp.supervisorId])[0];
+      if (supRows && supRows.values.length) {
+        director = findValidApprover(rowToObj(supRows.columns, supRows.values[0]), emp.id);
+      }
+    }
     if (director) {
       steps.push({
         approverId: director.id,
         approverName: director.name,
         approverRole: isTransfer ? '目标部门总监审批' : '部门总监审批',
-        step: 2,
+        step: steps.length + 1,
         total: 2,
       });
     }
 
     const total = steps.length;
     steps.forEach(s => (s.total = total));
+    steps.forEach((s, i) => (s.step = i + 1));
   }
 
   return steps;
@@ -250,4 +274,32 @@ export async function pushNotification(
     [crypto.randomUUID(), userId, title, content, type]
   );
   await saveDbToDisk();
+}
+
+export async function fixApprovalFlowForPendingApplications(): Promise<number> {
+  const db = await getDb();
+  const rows = db.exec(`SELECT * FROM applications WHERE status IN ('pending_approval', 'escalated', 'pending_check')`)[0];
+  if (!rows || !rows.values.length) return 0;
+
+  let fixed = 0;
+  for (const v of rows.values) {
+    const app = rowToObj(rows.columns, v);
+    const newSteps = await decideApprovalFlow(app.employeeId, app.type as AppType, app.targetDepartment);
+    if (!newSteps.length) continue;
+
+    db.run(`DELETE FROM approval_records WHERE application_id = ?`, [app.id]);
+    for (const s of newSteps) {
+      db.run(
+        `INSERT INTO approval_records (id, application_id, approver_id, approver_name, approver_role, step, total_steps, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', datetime('now'))`,
+        [crypto.randomUUID(), app.id, s.approverId, s.approverName, s.approverRole, s.step, s.total]
+      );
+    }
+
+    const firstApprover = newSteps[0];
+    db.run(`UPDATE applications SET status = 'pending_approval', updated_at = datetime('now') WHERE id = ?`, [app.id]);
+    await logOperation(null, 'system', '审批流程修复（新规则）', app.id, `按新规则重建审批流程：${newSteps.length}步，首审：${firstApprover.approverName}`, 'system');
+    fixed++;
+  }
+  if (fixed > 0) await saveDbToDisk();
+  return fixed;
 }

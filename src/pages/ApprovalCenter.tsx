@@ -163,8 +163,8 @@ export default function ApprovalCenter() {
                   <>
                     <button onClick={e => { e.stopPropagation(); setModal({ id: app.id, action: 'approve' }); }} className="btn-success text-xs" disabled={acting === app.id}><Check size={14} /> 通过</button>
                     <button onClick={e => { e.stopPropagation(); setModal({ id: app.id, action: 'reject' }); }} className="btn-danger text-xs" disabled={acting === app.id}><X size={14} /> 退回</button>
-                    {!app.escalated && app.currentApprover?.waitHours! > 24 && (
-                      <button onClick={e => { e.stopPropagation(); runEscalate(app.id); }} className="btn-ghost text-xs border border-slate-200" disabled={acting === app.id} title="手动升级"><ArrowUp size={14} /> 升级</button>
+                    {!app.escalated && (app.currentApprover?.waitHours || 0) >= 48 && (
+                      <button onClick={e => { e.stopPropagation(); runEscalate(app.id); }} className="btn-ghost text-xs border border-slate-200" disabled={acting === app.id} title="等待满48小时后可手动升级"><ArrowUp size={14} /> 升级</button>
                     )}
                   </>
                 )}

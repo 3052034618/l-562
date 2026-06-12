@@ -13,7 +13,7 @@ import dotenv from 'dotenv'
 import { fileURLToPath } from 'url'
 import { initDb } from './db.js'
 import cron from 'node-cron'
-import { calcWaitHours, pushNotification, logOperation, rowToObj } from './services.js'
+import { calcWaitHours, pushNotification, logOperation, rowToObj, fixApprovalFlowForPendingApplications } from './services.js'
 import { getDb, saveDbToDisk } from './db.js'
 
 import authRoutes from './routes/auth.js'
@@ -39,6 +39,12 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 ;(async () => {
   await initDb()
   console.log('Database initialized')
+  try {
+    const n = await fixApprovalFlowForPendingApplications()
+    if (n > 0) console.log(`[${new Date().toISOString()}] Fixed approval flow for ${n} pending application(s)`)
+  } catch (e) {
+    console.error('Fix approval flow error:', e)
+  }
 })()
 
 /**
