@@ -170,16 +170,16 @@ router.post('/:id/escalate', async (req: Request, res: Response) => {
     if (!upperRows) return res.status(404).json({ success: false, error: '上级不存在' });
     const upper = rowToObj(upperRows.columns, upperRows.values[0]);
 
-    db.run(`UPDATE approval_records SET escalated = 1 WHERE id = ?`, [step.id]);
+    db.run(`UPDATE approval_records SET status = 'delegated', escalated = 1, processed_at = datetime('now') WHERE id = ?`, [step.id]);
     db.run(`UPDATE applications SET status = 'escalated', updated_at = datetime('now') WHERE id = ?`, [id]);
     db.run(
       `INSERT INTO approval_records (id, application_id, approver_id, approver_name, approver_role, step, total_steps, status, created_at, escalated) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', datetime('now'), 1)`,
-      [crypto.randomUUID(), id, upper.id, upper.name, `升级审批（上级）`, step.step, step.totalSteps]
+      [crypto.randomUUID(), id, upper.id, upper.name, `升级审批（手动）`, step.step, step.totalSteps]
     );
 
-    await logOperation(operatorId || null, 'system', '审批超时升级', id, `从${approver.name}升级至${upper.name}（超过48小时未处理）`, 'exception');
-    await pushNotification(upper.id, '审批升级通知', `${app.employeeName}的${app.type === 'regular' ? '转正' : '调岗'}申请（${id}）已超过48小时未处理，已升级至您审批`, 'escalation');
-    await pushNotification(approver.id, '审批超时提醒', `${app.employeeName}的申请已超时未处理，已升级至上级${upper.name}`, 'exception');
+    await logOperation(operatorId || null, 'system', '审批手动升级', id, `从${approver.name}升级至${upper.name}`, 'exception');
+    await pushNotification(upper.id, '审批升级通知', `${app.employeeName}的${app.type === 'regular' ? '转正' : '调岗'}申请（${id}）已升级至您审批，请尽快处理`, 'escalation');
+    await pushNotification(approver.id, '审批升级提醒', `${app.employeeName}的申请已升级至上级${upper.name}，您已不再是当前审批人`, 'exception');
 
     await saveDbToDisk();
     res.json({ success: true, message: '已升级至上级审批' });

@@ -149,41 +149,46 @@ router.get('/monthly', async (_req: Request, res: Response) => {
   }
 });
 
+export async function generateMonthlyReport(month?: string) {
+  const db = await getDb();
+  const d = month ? new Date(month + '-01') : new Date();
+  const key = monthKey(d);
+  const nextKey = monthKey(addMonths(d, 1));
+  const start = `${key}-01 00:00:00`;
+  const end = `${nextKey}-01 00:00:00`;
+  const regTotal = Number(db.exec(`SELECT COUNT(*) FROM applications WHERE type='regular' AND submit_time >= ? AND submit_time < ?`, [start, end])[0].values[0][0]) || 0;
+  const regPass = Number(db.exec(`SELECT COUNT(*) FROM applications WHERE type='regular' AND status='approved' AND submit_time >= ? AND submit_time < ?`, [start, end])[0].values[0][0]) || 0;
+  const transTotal = Number(db.exec(`SELECT COUNT(*) FROM applications WHERE type='transfer' AND submit_time >= ? AND submit_time < ?`, [start, end])[0].values[0][0]) || 0;
+  const transPass = Number(db.exec(`SELECT COUNT(*) FROM applications WHERE type='transfer' AND status='approved' AND submit_time >= ? AND submit_time < ?`, [start, end])[0].values[0][0]) || 0;
+
+  const durRows = db.exec(`SELECT a.submit_time, MAX(ar.processed_at) as lat FROM applications a JOIN approval_records ar ON a.id = ar.application_id WHERE a.status='approved' AND ar.processed_at IS NOT NULL AND a.submit_time >= ? AND a.submit_time < ? GROUP BY a.id`, [start, end])[0];
+  let totalH = 0;
+  let c = 0;
+  if (durRows) {
+    durRows.values.forEach(v => {
+      totalH += (new Date(String(v[1]).replace(' ', 'T')).getTime() - new Date(String(v[0]).replace(' ', 'T')).getTime()) / 3600000;
+      c++;
+    });
+  }
+  const avg = c ? Math.round(totalH / c * 10) / 10 : 0;
+  const regRate = regTotal ? Math.round(regPass / regTotal * 1000) / 10 : 0;
+  const transRate = transTotal ? Math.round(transPass / transTotal * 1000) / 10 : 0;
+
+  const existing = db.exec(`SELECT id FROM monthly_reports WHERE month = ?`, [key])[0];
+  if (existing && existing.values.length) {
+    db.run(`UPDATE monthly_reports SET regular_pass_rate = ?, transfer_success_rate = ?, avg_process_duration = ?, regular_count = ?, transfer_count = ? WHERE month = ?`, [regRate, transRate, avg, regTotal, transTotal, key]);
+  } else {
+    db.run(`INSERT INTO monthly_reports (id, month, regular_pass_rate, transfer_success_rate, avg_process_duration, regular_count, transfer_count) VALUES (?, ?, ?, ?, ?, ?, ?)`, [crypto.randomUUID(), key, regRate, transRate, avg, regTotal, transTotal]);
+  }
+  await saveDbToDisk();
+  return { month: key, regularPassRate: regRate, transferSuccessRate: transRate, avgProcessDuration: avg, regularCount: regTotal, transferCount: transTotal };
+}
+
 router.post('/generate/monthly', async (req: Request, res: Response) => {
   try {
-    const db = await getDb();
     const { month } = req.body;
-    const d = month ? new Date(month + '-01') : new Date();
-    const key = monthKey(d);
-    const nextKey = monthKey(addMonths(d, 1));
-    const start = `${key}-01 00:00:00`;
-    const end = `${nextKey}-01 00:00:00`;
-    const regTotal = Number(db.exec(`SELECT COUNT(*) FROM applications WHERE type='regular' AND submit_time >= ? AND submit_time < ?`, [start, end])[0].values[0][0]) || 0;
-    const regPass = Number(db.exec(`SELECT COUNT(*) FROM applications WHERE type='regular' AND status='approved' AND submit_time >= ? AND submit_time < ?`, [start, end])[0].values[0][0]) || 0;
-    const transTotal = Number(db.exec(`SELECT COUNT(*) FROM applications WHERE type='transfer' AND submit_time >= ? AND submit_time < ?`, [start, end])[0].values[0][0]) || 0;
-    const transPass = Number(db.exec(`SELECT COUNT(*) FROM applications WHERE type='transfer' AND status='approved' AND submit_time >= ? AND submit_time < ?`, [start, end])[0].values[0][0]) || 0;
-
-    const durRows = db.exec(`SELECT a.submit_time, MAX(ar.processed_at) as lat FROM applications a JOIN approval_records ar ON a.id = ar.application_id WHERE a.status='approved' AND ar.processed_at IS NOT NULL AND a.submit_time >= ? AND a.submit_time < ? GROUP BY a.id`, [start, end])[0];
-    let totalH = 0;
-    let c = 0;
-    if (durRows) {
-      durRows.values.forEach(v => {
-        totalH += (new Date(String(v[1]).replace(' ', 'T')).getTime() - new Date(String(v[0]).replace(' ', 'T')).getTime()) / 3600000;
-        c++;
-      });
-    }
-    const avg = c ? Math.round(totalH / c * 10) / 10 : 0;
-    const regRate = regTotal ? Math.round(regPass / regTotal * 1000) / 10 : 0;
-    const transRate = transTotal ? Math.round(transPass / transTotal * 1000) / 10 : 0;
-
-    const existing = db.exec(`SELECT id FROM monthly_reports WHERE month = ?`, [key])[0];
-    if (existing) {
-      db.run(`UPDATE monthly_reports SET regular_pass_rate = ?, transfer_success_rate = ?, avg_process_duration = ?, regular_count = ?, transfer_count = ? WHERE month = ?`, [regRate, transRate, avg, regTotal, transTotal, key]);
-    } else {
-      db.run(`INSERT INTO monthly_reports (id, month, regular_pass_rate, transfer_success_rate, avg_process_duration, regular_count, transfer_count) VALUES (?, ?, ?, ?, ?, ?, ?)`, [crypto.randomUUID(), key, regRate, transRate, avg, regTotal, transTotal]);
-    }
-    await saveDbToDisk();
-    res.json({ success: true, data: { month: key, regularPassRate: regRate, transferSuccessRate: transRate, avgProcessDuration: avg, regularCount: regTotal, transferCount: transTotal } });
+    const result = await generateMonthlyReport(month);
+    res.json({ success: true, data: result });
   } catch (e: any) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -270,52 +275,118 @@ router.get('/export/pdf', async (req: Request, res: Response) => {
     let overview = { regularPassRate: 0, transferSuccessRate: 0, avgProcessDuration: 0, regularCount: 0, transferCount: 0 };
     if (overviewQ && overviewQ.values.length) {
       const o = rowToObj(overviewQ.columns, overviewQ.values[0]);
-      overview = { regularPassRate: o.regularPassRate, transferSuccessRate: o.transferSuccessRate, avgProcessDuration: o.avgProcessDuration, regularCount: o.regularCount, transferCount: o.transferCount };
+      overview = {
+        regularPassRate: o.regularPassRate,
+        transferSuccessRate: o.transferSuccessRate,
+        avgProcessDuration: o.avgProcessDuration,
+        regularCount: o.regularCount,
+        transferCount: o.transferCount,
+      };
     }
 
+    const trendRows = db.exec(`SELECT * FROM monthly_reports ORDER BY month DESC LIMIT 12`)[0];
+    const trendData = trendRows ? trendRows.values.map(v => rowToObj(trendRows.columns, v)).reverse() : [];
+    const trendHeader = ['月份', '转正通过率', '调岗成功率', '平均时长(小时)', '转正申请数', '调岗申请数'];
+    const trendBody: any[] = [trendHeader.map(h => ({ text: h, bold: true, fillColor: '#EEF2FF' }))];
+    trendData.forEach(t => {
+      trendBody.push([
+        t.month,
+        `${t.regularPassRate}%`,
+        `${t.transferSuccessRate}%`,
+        String(t.avgProcessDuration),
+        String(t.regularCount),
+        String(t.transferCount),
+      ]);
+    });
+
+    const appRows = db.exec(
+      `SELECT a.id, a.type, a.employee_id, a.employee_name, a.department, a.position, a.status, a.submit_time FROM applications a WHERE a.submit_time >= ? AND a.submit_time < ? ORDER BY a.submit_time DESC`,
+      [start, end]
+    )[0];
+    const appHeader = ['申请编号', '类型', '工号', '姓名', '部门', '岗位', '状态', '提交时间'];
+    const appBody: any[] = [appHeader.map(h => ({ text: h, bold: true, fillColor: '#EEF2FF', fontSize: 9 }))];
+    if (appRows) {
+      appRows.values.forEach(v => {
+        appBody.push([
+          v[0],
+          v[1] === 'regular' ? '转正' : '调岗',
+          v[2],
+          v[3],
+          v[4],
+          v[5] || '',
+          mapStatus(String(v[6])),
+          v[7],
+        ].map(c => ({ text: c, fontSize: 9 })));
+      });
+    }
+
+    const fontPath = 'C:\\Windows\\Fonts\\simhei.ttf';
     const printer = new PdfPrinter({
-      Roboto: {
-        normal: Buffer.from('AAEAAAA', 'base64'),
-        bold: Buffer.from('AAEAAAA', 'base64'),
-        italics: Buffer.from('AAEAAAA', 'base64'),
-        bolditalics: Buffer.from('AAEAAAA', 'base64'),
+      SimHei: {
+        normal: fontPath,
+        bold: fontPath,
+        italics: fontPath,
+        bolditalics: fontPath,
       },
     });
-    const docDefinition = {
+
+    const docDefinition: any = {
+      defaultStyle: { font: 'SimHei', fontSize: 10 },
+      pageSize: 'A4',
+      pageMargins: [30, 30, 30, 30],
       content: [
-        { text: `员工转正调岗审批月度报告 - ${titleMonth}`, fontSize: 18, bold: true, alignment: 'center', margin: [0, 0, 0, 20] },
-        { text: '核心指标', fontSize: 14, bold: true, margin: [0, 10, 0, 10] },
+        { text: `员工转正调岗审批月度报告 - ${titleMonth}`, fontSize: 20, bold: true, alignment: 'center', margin: [0, 0, 0, 20], color: '#1E3A5F' },
+        { text: `生成时间：${new Date().toLocaleString('zh-CN')}`, fontSize: 9, color: '#666', alignment: 'right', margin: [0, 0, 0, 10] },
+        { text: '一、核心指标', fontSize: 14, bold: true, margin: [0, 10, 0, 10], color: '#1E3A5F' },
         {
           table: {
+            headerRows: 1,
             widths: ['*', '*', '*', '*', '*'],
             body: [
-              ['转正通过率', '调岗成功率', '平均处理时长(小时)', '转正申请数', '调岗申请数'],
-              [`${overview.regularPassRate}%`, `${overview.transferSuccessRate}%`, String(overview.avgProcessDuration), String(overview.regularCount), String(overview.transferCount)],
+              [
+                { text: '转正通过率', bold: true, fillColor: '#EEF2FF' },
+                { text: '调岗成功率', bold: true, fillColor: '#EEF2FF' },
+                { text: '平均处理时长(小时)', bold: true, fillColor: '#EEF2FF' },
+                { text: '转正申请数', bold: true, fillColor: '#EEF2FF' },
+                { text: '调岗申请数', bold: true, fillColor: '#EEF2FF' },
+              ],
+              [
+                `${overview.regularPassRate}%`,
+                `${overview.transferSuccessRate}%`,
+                String(overview.avgProcessDuration),
+                String(overview.regularCount),
+                String(overview.transferCount),
+              ],
             ],
           },
           margin: [0, 0, 0, 20],
+          layout: 'lightHorizontalLines',
         },
-        { text: '环比趋势（近12个月）', fontSize: 14, bold: true, margin: [0, 10, 0, 10] },
-        (() => {
-          const trendRows = db.exec(`SELECT * FROM monthly_reports ORDER BY month DESC LIMIT 12`)[0];
-          const trend = trendRows ? trendRows.values.map(v => rowToObj(trendRows.columns, v)).reverse() : [];
-          const header = ['月份', '转正通过率', '调岗成功率', '平均时长(小时)'];
-          const body = [header, ...trend.map(t => [t.month, `${t.regularPassRate}%`, `${t.transferSuccessRate}%`, String(t.avgProcessDuration)])];
-          return { table: { widths: ['*', '*', '*', '*'], body }, margin: [0, 0, 0, 20] };
-        })(),
-        { text: '申请明细', fontSize: 14, bold: true, margin: [0, 10, 0, 10] },
-        (() => {
-          const rows = db.exec(`SELECT a.id, a.type, a.employee_id, a.employee_name, a.department, a.status, a.submit_time FROM applications a WHERE a.submit_time >= ? AND a.submit_time < ? ORDER BY a.submit_time DESC LIMIT 50`, [start, end])[0];
-          const header = ['申请编号', '类型', '工号', '姓名', '部门', '状态', '提交时间'];
-          const body = [header, ...(rows ? rows.values.map(v => [v[0], v[1] === 'regular' ? '转正' : '调岗', v[2], v[3], v[4], mapStatus(String(v[5])), v[6]]) : [])];
-          return { table: { widths: ['auto', 'auto', 'auto', 'auto', '*', 'auto', 'auto'], body }, fontSize: 9 };
-        })(),
+        { text: '二、环比趋势（近12个月）', fontSize: 14, bold: true, margin: [0, 10, 0, 10], color: '#1E3A5F' },
+        {
+          table: {
+            headerRows: 1,
+            widths: ['*', '*', '*', '*', '*', '*'],
+            body: trendBody,
+          },
+          layout: 'lightHorizontalLines',
+          margin: [0, 0, 0, 20],
+        },
+        { text: '三、申请明细', fontSize: 14, bold: true, margin: [0, 10, 0, 10], color: '#1E3A5F' },
+        {
+          table: {
+            headerRows: 1,
+            widths: ['auto', 'auto', 'auto', 'auto', '*', 'auto', 'auto', 'auto'],
+            body: appBody,
+          },
+          layout: 'lightHorizontalLines',
+        },
       ],
-      defaultStyle: { fontSize: 10 },
     };
-    const pdfDoc = printer.createPdfKitDocument(docDefinition as any);
+
+    const pdfDoc = printer.createPdfKitDocument(docDefinition);
     const chunks: any[] = [];
-    pdfDoc.on('data', chunk => chunks.push(chunk));
+    pdfDoc.on('data', (chunk: any) => chunks.push(chunk));
     pdfDoc.on('end', () => {
       const result = Buffer.concat(chunks);
       res.setHeader('Content-Type', 'application/pdf');

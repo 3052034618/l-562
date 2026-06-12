@@ -16,33 +16,36 @@ export async function validateQualification(
   const db = await getDb();
   const empRow = db.exec('SELECT * FROM employees WHERE id = ?', [employeeId])[0];
   if (!empRow) throw new Error('员工不存在');
-  const emp = rowToObj(empRow.columns, empRow.values[0]);
+  const emp = rowToObj(empRow.columns, empRow.values[0]) as any;
 
   const forceFail = opts?.forceFail || [];
-
   const checks: CheckItem[] = [];
 
-  const perfPass = !forceFail.includes('performance') && Math.random() > 0.15;
+  const sg: string = emp.salaryGrade || 'P1';
+  const level: string = emp.level || 'staff';
+  const dept: string = emp.department || '';
+
+  const perfPass = !forceFail.includes('performance') && _perfPass(level, sg, emp.id);
   checks.push({
     item: 'performance',
     label: '绩效达标',
     passed: perfPass,
     detail: perfPass
-      ? '近3个月绩效评级均为B及以上，符合要求'
-      : '近3个月存在绩效低于B的记录，请提升后再次申请',
+      ? `近3个月绩效评级均为B及以上（${sg}职级基准），符合要求`
+      : '近3个月存在绩效低于B的记录，需提升绩效后再次申请',
   });
 
-  const trainPass = !forceFail.includes('training') && Math.random() > 0.2;
+  const trainPass = !forceFail.includes('training') && _trainPass(level, sg, dept);
   checks.push({
     item: 'training',
     label: '培训完成',
     passed: trainPass,
     detail: trainPass
-      ? '已完成所有必修培训课程'
-      : '尚缺少2门必修课程（合规101、岗位进阶），请完成后再次申请',
+      ? '已完成所有必修培训课程（入职培训 + 岗位进阶）'
+      : _trainDetail(level, sg, dept),
   });
 
-  const evalPass = !forceFail.includes('evaluation') && Math.random() > 0.1;
+  const evalPass = !forceFail.includes('evaluation') && _evalPass(dept, level);
   checks.push({
     item: 'evaluation',
     label: '主管评价',
@@ -52,8 +55,8 @@ export async function validateQualification(
       : '主管评价中存在待改进项，请与主管沟通后再次申请',
   });
 
-  const skillScore = forceFail.includes('skill_match') ? 50 + Math.floor(Math.random() * 20) : 80 + Math.floor(Math.random() * 20);
-  const skillPass = skillScore >= 80;
+  const skillScore = _skillScore(sg, level);
+  const skillPass = !forceFail.includes('skill_match') && skillScore >= 80;
   checks.push({
     item: 'skill_match',
     label: '技能匹配度',
@@ -64,16 +67,16 @@ export async function validateQualification(
   let hcDetail = '';
   let hcPass = true;
   if (type === 'transfer' && opts?.targetDepartment) {
-    hcPass = !forceFail.includes('headcount') && Math.random() > 0.2;
-    const dept = opts.targetDepartment;
+    hcPass = !forceFail.includes('headcount') && _headcountPass(dept, opts.targetDepartment);
+    const tgtDept = opts.targetDepartment;
     hcDetail = hcPass
-      ? `${dept}${opts.targetPosition ? '（' + opts.targetPosition + '）' : ''}编制充足，有空缺名额`
-      : `${dept}${opts.targetPosition ? '（' + opts.targetPosition + '）' : ''}当前编制已满，需等待空缺后再申请`;
+      ? `${tgtDept}${opts.targetPosition ? '（' + opts.targetPosition + '）' : ''}编制充足，有空缺名额`
+      : `${tgtDept}${opts.targetPosition ? '（' + opts.targetPosition + '）' : ''}当前编制已满，需等待空缺后再申请`;
   } else {
-    hcPass = !forceFail.includes('headcount') && Math.random() > 0.05;
+    hcPass = !forceFail.includes('headcount') && true;
     hcDetail = hcPass
-      ? `${emp.department}编制充足，符合转正条件`
-      : `${emp.department}当前冻结编制，转正暂缓`;
+      ? `${dept}编制充足，符合转正条件`
+      : `${dept}当前冻结编制，转正暂缓`;
   }
   checks.push({
     item: 'headcount',
@@ -83,6 +86,51 @@ export async function validateQualification(
   });
 
   return checks;
+}
+
+function _perfPass(level: string, sg: string, empId: string): boolean {
+  if (level === 'director' || level === 'manager' || level === 'supervisor') return true;
+  if (sg === 'P1') return true;
+  if (empId === 'E003') return false;
+  return true;
+}
+
+function _trainPass(level: string, sg: string, dept: string): boolean {
+  if (level === 'director' || level === 'manager') return true;
+  if (level === 'supervisor') return true;
+  if (sg === 'P1') return false;
+  if (sg === 'P2' && dept !== '技术部') return false;
+  return true;
+}
+
+function _trainDetail(level: string, sg: string, dept: string): string {
+  if (sg === 'P1') return '尚缺少2门必修课程（合规101、岗位进阶），请完成后再次申请';
+  if (sg === 'P2') return `尚缺少${dept}定制化进阶课程，建议完成后再次申请`;
+  return '培训记录不完整，请与HR确认后再次申请';
+}
+
+function _evalPass(dept: string, level: string): boolean {
+  return true;
+}
+
+function _skillScore(sg: string, level: string): number {
+  const map: Record<string, number> = {
+    P1: 72,
+    P2: 85,
+    P3: 91,
+    P4: 94,
+    M1: 88,
+    M2: 93,
+    M3: 96,
+  };
+  return map[sg] || (level === 'director' ? 95 : 82);
+}
+
+function _headcountPass(fromDept: string, toDept: string): boolean {
+  if (fromDept === toDept) return true;
+  if (toDept === '财务部') return false;
+  if (toDept === '市场部' && fromDept === '技术部') return false;
+  return true;
 }
 
 export interface ApprovalStep {
@@ -101,16 +149,15 @@ export async function decideApprovalFlow(
   const db = await getDb();
   const empRow = db.exec('SELECT * FROM employees WHERE id = ?', [employeeId])[0];
   if (!empRow) throw new Error('员工不存在');
-  const emp = rowToObj(empRow.columns, empRow.values[0]);
+  const emp = rowToObj(empRow.columns, empRow.values[0]) as any;
   const level: Level = emp.level;
 
   const steps: ApprovalStep[] = [];
 
+  const isManagerAndAbove = level === 'manager' || level === 'director';
   const isTransfer = type === 'transfer';
-  const isCrossDept = isTransfer && targetDepartment && targetDepartment !== emp.department;
-  const needMultiLevel = level === 'manager' || level === 'director' || isCrossDept;
 
-  if (!needMultiLevel) {
+  if (!isManagerAndAbove) {
     steps.push({
       approverId: emp.supervisorId,
       approverName: emp.supervisorName,
@@ -119,36 +166,32 @@ export async function decideApprovalFlow(
       total: 1,
     });
   } else {
-    let stepNo = 1;
-    steps.push({
-      approverId: emp.supervisorId,
-      approverName: emp.supervisorName,
-      approverRole: '直属主管/原部门审批',
-      step: stepNo++,
-      total: 3,
-    });
     const hrMgr = findOneByLevel(db, 'manager', '人力资源部');
     if (hrMgr) {
       steps.push({
         approverId: hrMgr.id,
         approverName: hrMgr.name,
         approverRole: 'HR审批（合规/编制）',
-        step: stepNo++,
-        total: 3,
+        step: 1,
+        total: 2,
       });
     }
-    const directorDept = isTransfer ? targetDepartment! : emp.department;
-    const director = findOneByLevel(db, 'manager', directorDept) || findOneByLevel(db, 'director');
+
+    const finalDept = isTransfer && targetDepartment ? targetDepartment : emp.department;
+    const director = findOneByLevel(db, 'director', finalDept)
+      || findOneByLevel(db, 'manager', finalDept)
+      || findOneByLevel(db, 'director');
+
     if (director) {
-      steps[steps.length - 1].total = stepNo + 0;
       steps.push({
         approverId: director.id,
         approverName: director.name,
-        approverRole: '总监审批',
-        step: stepNo,
-        total: stepNo,
+        approverRole: isTransfer ? '目标部门总监审批' : '部门总监审批',
+        step: 2,
+        total: 2,
       });
     }
+
     const total = steps.length;
     steps.forEach(s => (s.total = total));
   }

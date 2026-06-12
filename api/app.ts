@@ -20,7 +20,7 @@ import authRoutes from './routes/auth.js'
 import applicationRoutes from './routes/applications.js'
 import approvalRoutes from './routes/approvals.js'
 import employeeRoutes from './routes/employees.js'
-import reportRoutes from './routes/reports.js'
+import reportRoutes, { generateMonthlyReport } from './routes/reports.js'
 import logRoutes from './routes/logs.js'
 import queryRoutes from './routes/query.js'
 import notificationRoutes from './routes/notifications.js'
@@ -108,14 +108,14 @@ cron.schedule('0 * * * *', async () => {
       if (!upRows) continue
       const upper = rowToObj(upRows.columns, upRows.values[0])
 
-      db.run(`UPDATE approval_records SET escalated = 1 WHERE id = ?`, [step.id])
+      db.run(`UPDATE approval_records SET status = 'delegated', escalated = 1, processed_at = datetime('now') WHERE id = ?`, [step.id])
       db.run(`UPDATE applications SET status = 'escalated', updated_at = datetime('now') WHERE id = ?`, [step.appId])
       db.run(`INSERT INTO approval_records (id, application_id, approver_id, approver_name, approver_role, step, total_steps, status, created_at, escalated) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', datetime('now'), 1)`,
         [crypto.randomUUID(), step.appId, upper.id, upper.name, '升级审批（超时自动）', step.step, step.totalSteps])
 
       await logOperation(null, 'system', '审批超时升级（定时任务）', step.appId, `从${approver.name}升级至${upper.name}，已等待${calcWaitHours(step.createdAt)}小时`, 'exception')
-      await pushNotification(upper.id, '审批超时自动升级', `${step.employeeName}的${step.type === 'regular' ? '转正' : '调岗'}申请超时未处理，已升级至您审批`, 'escalation')
-      await pushNotification(step.approverId, '审批超时警告', `您的待办审批（${step.appId}）已超时48小时，系统已自动升级`, 'exception')
+      await pushNotification(upper.id, '审批超时自动升级', `${step.employeeName}的${step.type === 'regular' ? '转正' : '调岗'}申请超时未处理，已升级至您审批，请尽快处理`, 'escalation')
+      await pushNotification(step.approverId, '审批超时警告', `您的待办审批（${step.appId}）已超时48小时，系统已自动升级至您的上级主管`, 'exception')
     }
     if (updates.length) {
       await saveDbToDisk()
@@ -123,6 +123,15 @@ cron.schedule('0 * * * *', async () => {
     }
   } catch (e) {
     console.error('Cron escalation error:', e)
+  }
+})
+
+cron.schedule('0 2 1 * *', async () => {
+  try {
+    const result = await generateMonthlyReport()
+    console.log(`[${new Date().toISOString()}] Monthly report auto-generated: ${result.month}`)
+  } catch (e) {
+    console.error('Cron monthly report error:', e)
   }
 })
 

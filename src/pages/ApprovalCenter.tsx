@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react';
 import { useAppStore, CURRENT_USER_ID } from '@/store/app';
 import { STATUS_MAP, TYPE_MAP, LEVEL_MAP, formatDate } from '@/lib/api';
 import {
-  ClipboardCheck, CheckCircle2, XCircle, Clock, AlertTriangle, Filter, Search, Check, X, ArrowUp, ArrowUpCircle, ChevronDown, ChevronUp, UserCheck, FileText, ArrowRightLeft, RotateCcw, RotateCcwIcon, BadgeCheck, ShieldCheck, AlertOctagon, ChevronRight, Loader2,
+  ClipboardCheck, CheckCircle2, XCircle, Clock, AlertTriangle, Filter, Search, Check, X, ArrowUp, ArrowUpCircle, ChevronDown, ChevronUp, UserCheck, FileText, ArrowRightLeft, RotateCcw, RotateCcwIcon, BadgeCheck, ShieldCheck, AlertOctagon, ChevronRight, Loader2, ArrowUpRight,
 } from 'lucide-react';
 import type { Application } from '../../shared/types';
 
@@ -198,28 +198,55 @@ export default function ApprovalCenter() {
                   <div>
                     <div className="text-xs font-semibold text-slate-700 mb-2">审批流程 & 记录</div>
                     <div className="space-y-2">
-                      {app.approvalRecords.map((a, idx) => (
-                        <div key={a.id} className={`p-3 rounded-lg bg-white border ${a.status === 'pending' ? 'border-amber-200 bg-amber-50/40' : a.status === 'approved' ? 'border-emerald-100' : 'border-red-100'}`}>
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="flex items-center gap-3">
-                              <div className={`w-8 h-8 rounded-full flex items-center justify-center ${a.status === 'approved' ? 'bg-emerald-100 text-emerald-600' : a.status === 'rejected' ? 'bg-red-100 text-red-600' : 'bg-amber-100 text-amber-600'}`}>
-                                {a.status === 'approved' ? <Check size={14} /> : a.status === 'rejected' ? <X size={14} /> : <Clock size={14} />}
-                              </div>
-                              <div>
-                                <div className="text-sm font-semibold text-slate-800">第{a.step}/{a.totalSteps} · {a.approverRole}</div>
-                                <div className="text-[11px] text-slate-500">{a.approverName}
-                                  {a.processedAt && <span> · {formatDate(a.processedAt)}</span>}
-                                  {a.escalated && <span> · <span className="text-fuchsia-600">已升级</span></span>}
+                      {app.approvalRecords.map((a, idx) => {
+                        const statusStyle: Record<string, string> = {
+                          pending: 'border-amber-200 bg-amber-50/40',
+                          approved: 'border-emerald-100',
+                          rejected: 'border-red-100',
+                          delegated: 'border-slate-200 bg-slate-50',
+                        };
+                        const iconStyle: Record<string, string> = {
+                          pending: 'bg-amber-100 text-amber-600',
+                          approved: 'bg-emerald-100 text-emerald-600',
+                          rejected: 'bg-red-100 text-red-600',
+                          delegated: 'bg-slate-200 text-slate-500',
+                        };
+                        const chipStyle: Record<string, string> = {
+                          pending: 'bg-amber-100 text-amber-700',
+                          approved: 'bg-emerald-100 text-emerald-700',
+                          rejected: 'bg-red-100 text-red-700',
+                          delegated: 'bg-slate-200 text-slate-600',
+                        };
+                        const statusLabel: Record<string, string> = {
+                          pending: '待处理',
+                          approved: '通过',
+                          rejected: '退回',
+                          delegated: '已转交',
+                        };
+                        const StatusIcon = a.status === 'approved' ? Check : a.status === 'rejected' ? X : a.status === 'delegated' ? ArrowUpRight : Clock;
+                        return (
+                          <div key={a.id} className={`p-3 rounded-lg bg-white border ${statusStyle[a.status] || ''}`}>
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="flex items-center gap-3">
+                                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${iconStyle[a.status] || ''}`}>
+                                  <StatusIcon size={14} />
+                                </div>
+                                <div>
+                                  <div className="text-sm font-semibold text-slate-800">第{a.step}/{a.totalSteps} · {a.approverRole}</div>
+                                  <div className="text-[11px] text-slate-500">{a.approverName}
+                                    {a.processedAt && <span> · {formatDate(a.processedAt)}</span>}
+                                    {a.escalated && <span> · <span className="text-fuchsia-600">已升级</span></span>}
+                                  </div>
                                 </div>
                               </div>
+                              <span className={`chip ${chipStyle[a.status] || ''}`}>
+                                {statusLabel[a.status] || a.status}
+                              </span>
                             </div>
-                            <span className={`chip ${a.status === 'approved' ? 'bg-emerald-100 text-emerald-700' : a.status === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
-                              {a.status === 'approved' ? '通过' : a.status === 'rejected' ? '退回' : '待处理'}
-                            </span>
+                            {a.comment && <div className="mt-2 ml-11 text-xs text-slate-600 pl-3 py-2 bg-slate-50 rounded-lg px-3 border-l-2 border-slate-200">💬 {a.comment}</div>}
                           </div>
-                          {a.comment && <div className="mt-2 ml-11 text-xs text-slate-600 pl-3 py-2 bg-slate-50 rounded-lg px-3 border-l-2 border-slate-200">💬 {a.comment}</div>}
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 </div>

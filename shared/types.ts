@@ -1,7 +1,7 @@
 export type Level = 'staff' | 'supervisor' | 'manager' | 'director';
 export type AppType = 'regular' | 'transfer';
 export type AppStatus = 'pending_check' | 'check_failed' | 'pending_approval' | 'approved' | 'rejected' | 'escalated';
-export type ApprovalStatus = 'pending' | 'approved' | 'rejected';
+export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'delegated';
 export type NotifType = 'approval' | 'escalation' | 'system' | 'exception' | 'info';
 
 export interface Employee {
